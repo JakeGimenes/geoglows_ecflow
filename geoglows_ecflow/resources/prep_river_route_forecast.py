@@ -6,17 +6,13 @@ import sys
 from glob import glob
 
 from geoglows_ecflow.resources.helper_functions import (
+    configure_logging,
     get_ensemble_number_from_forecast,
     get_valid_vpucode_list,
 )
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    stream=sys.stdout,
-)
+configure_logging()
 
 
 def forecast_preprocess(

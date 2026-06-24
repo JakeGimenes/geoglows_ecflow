@@ -21,7 +21,7 @@ http://www.apache.org/licenses/LICENSE-2.0
 
 import os
 from functools import wraps
-from pkg_resources import parse_version
+from packaging.version import parse as parse_version
 import ecflow
 from .py2 import reduce
 try:

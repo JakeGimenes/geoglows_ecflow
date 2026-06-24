@@ -1,17 +1,29 @@
 import argparse
 import logging
 import os
-import sys
 
 import netCDF4 as nc
 import pandas as pd
 import xarray as xr
 
+from geoglows_ecflow.resources.helper_functions import (
+    RETURN_PERIODS,
+    configure_logging,
+)
+
+# Only the first 10 days of the forecast are summarized in the style table.
+FORECAST_WINDOW_DAYS = 10
+
+# Mean-flow thresholds (m^3/s) that drive the map line-thickness ladder. Flows
+# below the first threshold get thickness 1; each threshold crossed bumps the
+# thickness by one (levels 2..6).
+THICKNESS_THRESHOLDS = [20, 250, 1500, 10000, 30000]
+
 
 def postprocess_vpu_forecast_directory(
     output_dir: str,
     returnperiods: str,
-    vpu: int or str,
+    vpu: int | str,
 ):
     # creates file name for the csv file
     date_string = os.path.basename(
@@ -34,7 +46,8 @@ def postprocess_vpu_forecast_directory(
 
     # limit both dataframes to the first 10 days
     mean_flow_df = mean_flow_df[
-        mean_flow_df.index <= mean_flow_df.index[0] + pd.Timedelta(days=10)
+        mean_flow_df.index
+        <= mean_flow_df.index[0] + pd.Timedelta(days=FORECAST_WINDOW_DAYS)
     ]
 
     # creating pandas dataframe with return periods
@@ -43,32 +56,21 @@ def postprocess_vpu_forecast_directory(
     with nc.Dataset(rp_path, "r") as rp_ncfile:
         rp_df = pd.DataFrame(
             {
-                "return_2": rp_ncfile.variables["rp2"][:],
-                "return_5": rp_ncfile.variables["rp5"][:],
-                "return_10": rp_ncfile.variables["rp10"][:],
-                "return_25": rp_ncfile.variables["rp25"][:],
-                "return_50": rp_ncfile.variables["rp50"][:],
-                "return_100": rp_ncfile.variables["rp100"][:],
+                f"return_{rp}": rp_ncfile.variables[f"rp{rp}"][:]
+                for rp in RETURN_PERIODS
             },
             index=rp_ncfile.variables["river_id"][:],
         )
 
     mean_thickness_df = pd.DataFrame(columns=comids, index=dates, dtype=int)
     mean_thickness_df[:] = 1
-    mean_thickness_df[mean_flow_df >= 20] = 2
-    mean_thickness_df[mean_flow_df >= 250] = 3
-    mean_thickness_df[mean_flow_df >= 1500] = 4
-    mean_thickness_df[mean_flow_df >= 10000] = 5
-    mean_thickness_df[mean_flow_df >= 30000] = 6
+    for level, threshold in enumerate(THICKNESS_THRESHOLDS, start=2):
+        mean_thickness_df[mean_flow_df >= threshold] = level
 
     mean_ret_per_df = pd.DataFrame(columns=comids, index=dates, dtype=int)
     mean_ret_per_df[:] = 0
-    mean_ret_per_df[mean_flow_df.gt(rp_df["return_2"], axis=1)] = 2
-    mean_ret_per_df[mean_flow_df.gt(rp_df["return_5"], axis=1)] = 5
-    mean_ret_per_df[mean_flow_df.gt(rp_df["return_10"], axis=1)] = 10
-    mean_ret_per_df[mean_flow_df.gt(rp_df["return_25"], axis=1)] = 25
-    mean_ret_per_df[mean_flow_df.gt(rp_df["return_50"], axis=1)] = 50
-    mean_ret_per_df[mean_flow_df.gt(rp_df["return_100"], axis=1)] = 100
+    for rp in RETURN_PERIODS:
+        mean_ret_per_df[mean_flow_df.gt(rp_df[f"return_{rp}"], axis=1)] = rp
 
     mean_flow_df = mean_flow_df.stack().to_frame().rename(columns={0: "mean"})
     mean_thickness_df = (
@@ -118,12 +120,7 @@ if __name__ == "__main__":
     returnperiods = os.path.join(workspace, "return_periods_dir")
     vpu = args.vpu[0]
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-        stream=sys.stdout,
-    )
+    configure_logging()
 
     params = [output_dir, returnperiods, vpu]
 

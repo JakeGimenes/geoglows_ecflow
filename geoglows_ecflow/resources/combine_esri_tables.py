@@ -1,11 +1,12 @@
 import argparse
 import logging
-import sys
 
 import glob
 import os
 
 import pandas as pd
+
+from geoglows_ecflow.resources.helper_functions import configure_logging
 
 
 def combine_esri_tables(workspace: str):
@@ -56,10 +57,6 @@ if __name__ == "__main__":
     args = argparser.parse_args()
     workspace = args.workspace[0]
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        stream=sys.stdout,
-    )
+    configure_logging()
 
     combine_esri_tables(workspace)

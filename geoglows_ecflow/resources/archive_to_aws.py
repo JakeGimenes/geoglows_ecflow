@@ -1,10 +1,11 @@
 import argparse
 import glob
-import json
 import os
 
 import boto3
 import yaml
+
+from geoglows_ecflow.resources.helper_functions import load_forecast_run
 
 
 def upload_to_s3(workspace: str, aws_config_file: str):
@@ -22,10 +23,9 @@ def upload_to_s3(workspace: str, aws_config_file: str):
         forecast_bucket_uri = config["bucket_forecast_archive"]
         mapstyletable_bucket_uri = config["bucket_maptable_archive"]
 
-    with open(os.path.join(workspace, "forecast_run.json"), "r") as f:
-        data = json.load(f)
-        date = data["date"]
-        output_dir = data["output_dir"]
+    data = load_forecast_run(workspace)
+    date = data["date"]
+    output_dir = data["output_dir"]
 
     # Create an S3 client
     s3 = boto3.client(
@@ -60,17 +60,15 @@ if __name__ == "__main__":
     argparser = argparse.ArgumentParser()
     argparser.add_argument(
         "workspace",
-        nargs=1,
         help="Path to suite home directory",
     )
     argparser.add_argument(
         "aws_config_file",
-        nargs=1,
         help="Path to AWS config file",
     )
 
     args = argparser.parse_args()
-    workspace = args.workspace[0]
-    aws_config_file = args.aws_config_file[0]
+    workspace = args.workspace
+    aws_config_file = args.aws_config_file
 
     upload_to_s3(workspace, aws_config_file)

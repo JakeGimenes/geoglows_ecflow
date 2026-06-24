@@ -1,24 +1,35 @@
 from geoglows_ecflow.workflow.builders.base import GEOGLOWSBaseBuilder
 from geoglows_ecflow.workflow.comfies.ooflow import Trigger, Defuser
 from geoglows_ecflow.workflow.comfies.ooflow import all_complete, Event, complete
-from geoglows_ecflow.workflow.comfies.ooflow import complete, Limit, InLimit, Variable
+from geoglows_ecflow.workflow.comfies.ooflow import Limit, InLimit, Variable
 from geoglows_ecflow.workflow.comfies.ooflow import RepeatDate, Defstatus
-from geoglows_ecflow.workflow.parts.nodes import Family, Task
+from geoglows_ecflow.workflow.parts.nodes import Family, Task, NominalTime
 from geoglows_ecflow.workflow.parts.times import (
     t2t,
-    Timer,
     CronDateRefresh,
     CronDataAvailability,
 )
-from geoglows_ecflow.workflow.comfies.dateandtime import Date, TimeDelta, CalSeq
+from geoglows_ecflow.workflow.comfies.dateandtime import Date, CalSeq
 from geoglows_ecflow.workflow.parts.admin import AdminFamily
 from geoglows_ecflow.workflow.parts.epilogs import DummyEpilog
 from geoglows_ecflow.workflow.parts.repeats import calseq_repeat
 from geoglows_ecflow.workflow.parts.packages import PackageInstallers
 from geoglows_ecflow.workflow.comfies.partition import partition
+from geoglows_ecflow.resources.helper_functions import HRES_ENSEMBLE_MEMBER
+
+# Scheduler memory reservations (MB) for the heavier tasks.
+ENS_TASK_MEM_MB = 6000
+ARCHIVE_QINIT_MEM_MB = 4000
 
 
-from geoglows_ecflow.workflow.parts.nodes import Family, Task, NominalTime
+def is_00z_cycle(nominal_time):
+    """Whether a nominal-time family is the 00Z cycle.
+
+    The 00Z cycle runs the full ensemble pipeline; the 12Z cycle runs a
+    reduced tree. The cycle is identified by the EMOS_BASE variable the
+    NominalTime family carries ("00" or "12").
+    """
+    return nominal_time.get_variable("EMOS_BASE").value() != "12"
 
 
 class Builder(GEOGLOWSBaseBuilder):
@@ -39,36 +50,30 @@ class Builder(GEOGLOWSBaseBuilder):
 
     def build(self):
         """
-        Create parts and wire them together into an GLOFAS suite.
+        Create parts and wire them together into a GEOGloWS suite.
         Naming conventions:
         n_*  -- ecFlow Node object
         e_*  -- ecFlow Event object
         """
         super(Builder, self).build()
         cfg = self.config
-        # get suite configuration parameters from the deployment config file
-        suite_name = self.config.get("name")
-        mode = self.config.get("mode", choices=["prod", "test", "rd"])
-        first_date = self.config.get("first_date", type=int)
-        last_date = self.config.get("last_date", type=int, default="20300101")
-        first_barrier = self.config.get(
-            "first_barrier", type=int, default=first_date
-        )
-        archive_path = self.config.get("exparch")
-        suite_dir = self.config.get("workroot")
 
-        with_flood_hazard = self.config.get("with_floodhazard", default=False)
-        wb_days = self.config.get("wb_days", type=int, default=10)
+        # All tunable parameters read from the deployment config file are
+        # gathered here so what the suite exposes is visible at a glance.
+        # (exparch/workroot are consumed by the task scripts via templating,
+        # so they are intentionally not read here.)
+        suite_name = cfg.get("name")
+        # Validate the run mode (consumed by suite.h via templating); the
+        # builder no longer branches on it, so the return is discarded.
+        cfg.get("mode", choices=["prod", "test"])
+        first_date = cfg.get("first_date", type=int)
+        last_date = cfg.get("last_date", type=int, default="20300101")
+        first_barrier = cfg.get("first_barrier", type=int, default=first_date)
+        mars_nworkers = cfg.get("mars_workers", type=int, default=1)
+        ens_members = cfg.get("ens_members", type=int, default=51)
+        vpu_list = cfg.get("vpu_list", type=list, default=[])
 
-        # initially empty suite, provided by parent
-        # class will be filled up with content here.
-        mars_nworkers = self.config.get("mars_workers", type=int, default=1)
-        ens_members = self.config.get("ens_members", type=int, default=51)
-        ens_range = self.config.get("ens_range", type=int, default=30)
-        suite = self.suite
-        par_jobvars = self.jobvars.dest("parallel", fallback="PARENT")
-
-        # Selectable Trigger suites
+        # Operational suites this suite triggers off (normalized to lead "/").
         o_suite = cfg.get("o_suite", default="/o")
         mc_suite = cfg.get("mc_suite", default="/mc")
         if o_suite[0] != "/":
@@ -76,8 +81,7 @@ class Builder(GEOGLOWSBaseBuilder):
         if mc_suite[0] != "/":
             mc_suite = f"/{mc_suite}"
 
-        # these flags are not user-configurable but
-        # depend on other flags
+        suite = self.suite
 
         # admin family
         n_admin = Family("admin")
@@ -99,17 +103,6 @@ class Builder(GEOGLOWSBaseBuilder):
 
         with_webpush = False
         with_diss = False
-        follow_osuite = False
-        in_production = False
-        in_test = False
-
-        if mode == "prod":
-            in_production = True
-        if mode == "test":
-            in_test = True
-
-        if in_production or in_test:
-            follow_osuite = True
 
         # make family
         n_make = Family("make")
@@ -137,8 +130,6 @@ class Builder(GEOGLOWSBaseBuilder):
         )
 
         n_make.add_inlimit("make")
-
-        vpu_list = self.config.get("vpu_list", type=list, default=[])
 
         n_make.add(Variable("YMD", first_date))
         suite.add(n_make, n_admin)
@@ -180,47 +171,38 @@ class Builder(GEOGLOWSBaseBuilder):
             (barrier_00, main_00, lag_00),
         ):
             cycle = str(main_hh.time.hh)
-            tnom = main_hh.time
 
-            if follow_osuite:
-                self.defs.add_extern(f"{mc_suite}/main:YMD")
-                self.defs.add_extern(f"{mc_suite}/main/{cycle}/fc0015d/fc")
-                self.defs.add_extern(f"{o_suite}/main:YMD")
-                self.defs.add_extern(f"{o_suite}/main/{cycle}/fc/model")
-                n_run_hr = Family("run_hr").add(
-                    Trigger(
-                        f"({o_suite}/main:YMD == /{suite_name}/barrier/daily:YMD "
-                        f"and {o_suite}/main/{cycle}/fc/model == complete) "
-                        f"or ({o_suite}/main:YMD > /{suite_name}/barrier/daily:YMD)"
-                    )
+            self.defs.add_extern(f"{mc_suite}/main:YMD")
+            self.defs.add_extern(f"{mc_suite}/main/{cycle}/fc0015d/fc")
+            self.defs.add_extern(f"{o_suite}/main:YMD")
+            self.defs.add_extern(f"{o_suite}/main/{cycle}/fc/model")
+            n_run_hr = Family("run_hr").add(
+                Trigger(
+                    f"({o_suite}/main:YMD == /{suite_name}/barrier/daily:YMD "
+                    f"and {o_suite}/main/{cycle}/fc/model == complete) "
+                    f"or ({o_suite}/main:YMD > /{suite_name}/barrier/daily:YMD)"
                 )
-                n_run_hr.add(
-                    Task("dummy").add(Trigger("0==1")).add(Defuser("1==1"))
+            )
+            n_run_hr.add(
+                Task("dummy").add(Trigger("0==1")).add(Defuser("1==1"))
+            )
+            n_run_en = Family("run_en").add(
+                Trigger(
+                    f"({mc_suite}/main:YMD == /{suite_name}/barrier/daily:YMD "
+                    f"and {mc_suite}/main/{cycle}/fc0015d/fc == complete) "
+                    f"or ({mc_suite}/main:YMD > /{suite_name}/barrier/daily:YMD)"
                 )
-                n_run_en = Family("run_en").add(
-                    Trigger(
-                        f"({mc_suite}/main:YMD == /{suite_name}/barrier/daily:YMD "
-                        f"and {mc_suite}/main/{cycle}/fc0015d/fc == complete) "
-                        f"or ({mc_suite}/main:YMD > /{suite_name}/barrier/daily:YMD)"
-                    )
-                )
-                n_run_en.add(
-                    Task("dummy").add(Trigger("0==1")).add(Defuser("1==1"))
-                )
+            )
+            n_run_en.add(
+                Task("dummy").add(Trigger("0==1")).add(Defuser("1==1"))
+            )
 
-                n_barrier_epilog = Family("last").add(
-                    Trigger(
-                        f"{o_suite}/main:YMD > /{suite_name}/barrier/daily:YMD"
-                    ),
-                    Task("sleep").add(Trigger("0==1"), Defuser("1==1")),
-                )
-
-            else:
-                n_run_hr = Family("run_hr")
-                n_run_en = Family("run_en")
-                n_run_hr.add(Task("dummy"), Timer(tnom + TimeDelta(hours=7)))
-                n_run_en.add(Task("dimmy"), Timer(tnom + TimeDelta(hours=9)))
-                n_barrier_epilog = DummyEpilog(done=Timer("14:15"))
+            n_barrier_epilog = Family("last").add(
+                Trigger(
+                    f"{o_suite}/main:YMD > /{suite_name}/barrier/daily:YMD"
+                ),
+                Task("sleep").add(Trigger("0==1"), Defuser("1==1")),
+            )
 
             barrier_hh.add(n_run_hr, n_run_en)
             n_barrier_daily.add(barrier_hh)
@@ -236,8 +218,7 @@ class Builder(GEOGLOWSBaseBuilder):
             n_hr.add(n_ret_hr)
 
             n_ens = Family("ens")
-            if follow_osuite:
-                n_ens.trigger = n_run_en.complete.across("YMD")
+            n_ens.trigger = n_run_en.complete.across("YMD")
             n_ens.trigger &= n_initialize.complete
             n_ens.add(Variable("CONTEXT", "ens"))
             n_ret_ens = Family("retrieve")
@@ -258,14 +239,14 @@ class Builder(GEOGLOWSBaseBuilder):
             n_prep_ens.trigger &= n_ret_hr.complete
             n_ens_ens = Family("ens_members")
             n_ens_ens.trigger = n_prep_ens.complete
-            n_ens_ens.add_variable("MEM", 6000)
+            n_ens_ens.add_variable("MEM", ENS_TASK_MEM_MB)
             n_ens.add(n_ret_ens)
-            if main_hh.get_variable("EMOS_BASE").value() != "12":
+            if is_00z_cycle(main_hh):
                 n_ens.add(n_prep_ens, n_ens_ens)
 
             for vpu in vpu_list:
                 # Create the ensemble tasks
-                for mem in reversed(range(1, 53)):
+                for mem in reversed(range(1, HRES_ENSEMBLE_MEMBER + 1)):
                     n_member = Family(f"{vpu}_{mem:02d}").add(
                         Task("ens_member"),
                         Variable("JOB_ID", f"job_{vpu}_{mem}"),
@@ -300,7 +281,7 @@ class Builder(GEOGLOWSBaseBuilder):
             n_forecast_warnings.trigger = n_vpus.complete
 
             n_archive_qinit = Task("archive_qinit")
-            n_archive_qinit.add_variable('MEM', 4000)
+            n_archive_qinit.add_variable('MEM', ARCHIVE_QINIT_MEM_MB)
             n_archive_qinit.add_variable('NCPUS', 12)
             n_archive_qinit.trigger = n_vpus.complete
 
@@ -327,10 +308,7 @@ class Builder(GEOGLOWSBaseBuilder):
             n_web_test.defuser = e_no_web_test
             n_web.add(n_web_prod, n_web_test)
 
-            if not follow_osuite:
-                barrier_ymd = barrier_hh.ymd
-
-            if main_hh.get_variable("EMOS_BASE").value() != "12":
+            if is_00z_cycle(main_hh):
                 main_hh.add(
                     n_initialize,
                     n_hr,
@@ -355,7 +333,7 @@ class Builder(GEOGLOWSBaseBuilder):
             n_lag_arch_init.defuser = e_no_ecfs_archive
             n_lag_arch_fc = Task("arch_fc")
             n_lag_arch_fc.defuser = e_no_ecfs_archive
-            if main_hh.get_variable("EMOS_BASE").value() != "12":
+            if is_00z_cycle(main_hh):
                 lag_hh.add(n_lag_arch_init, n_lag_arch_fc)
             lag_hh.trigger = main_hh.complete.across("YMD")
             n_daily_lag.add(lag_hh)

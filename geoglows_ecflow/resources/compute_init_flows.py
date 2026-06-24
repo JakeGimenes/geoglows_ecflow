@@ -1,9 +1,10 @@
 import argparse
-import json
 import os
 
 import pandas as pd
 import xarray as xr
+
+from geoglows_ecflow.resources.helper_functions import load_forecast_run
 
 
 # Time index 7 of the ensemble-mean Q corresponds to t+24h on the ENS
@@ -14,8 +15,7 @@ INIT_TIME_INDEX = 7
 
 
 def main(workspace: str, vpu: str) -> None:
-    with open(os.path.join(workspace, "forecast_run.json"), "r") as f:
-        ymd = json.load(f)["date"]
+    ymd = load_forecast_run(workspace)["date"]
 
     avg_path = os.path.join(workspace, "output", f"nces_avg_{vpu}.nc")
     out_path = os.path.join(workspace, "input", vpu, f"Qinit_{ymd}.parquet")

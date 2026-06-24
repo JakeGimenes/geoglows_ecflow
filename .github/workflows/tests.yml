@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    defaults:
+      run:
+        # Login shell so the micromamba environment stays activated across steps.
+        shell: bash -el {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ecflow is not on PyPI; it is installed from conda-forge via the
+      # environment file. river-route and the rest come along with it.
+      - name: Create environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          create-args: >-
+            python=${{ matrix.python-version }}
+          cache-environment: true
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest -q --cov=geoglows_ecflow.resources --cov-report=term-missing

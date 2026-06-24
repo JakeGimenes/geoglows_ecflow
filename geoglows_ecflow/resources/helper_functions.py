@@ -2,10 +2,47 @@
 # See: spt_compute (https://github.com/erdc/spt_compute)
 # Updated by Michael Souffront, 2023
 
+import json
 import os
 import sys
 import re
 import logging as log
+
+# Return periods (years) used throughout the forecast post-processing. Defined
+# once here and imported by the modules that build return-period ladders.
+RETURN_PERIODS = [2, 5, 10, 25, 50, 100]
+
+# The high-resolution (HRES) forecast is always ensemble member 52. Members
+# 1-51 are the ensemble perturbations. Defined once here and imported wherever
+# the workflow needs to single out (or exclude) the HRES member.
+HRES_ENSEMBLE_MEMBER = 52
+
+# Shared logging format so every resource module logs identically.
+LOG_FORMAT = "%(asctime)s %(levelname)s %(message)s"
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+
+def configure_logging(level: str = "INFO") -> None:
+    """Configure root logging with the shared format, writing to stdout."""
+    log.basicConfig(
+        level=level,
+        format=LOG_FORMAT,
+        datefmt=LOG_DATEFMT,
+        stream=sys.stdout,
+    )
+
+
+def load_forecast_run(workspace: str) -> dict:
+    """Load and parse <workspace>/forecast_run.json.
+
+    Args:
+        workspace (str): Directory containing forecast_run.json.
+
+    Returns:
+        dict: The parsed forecast-run manifest.
+    """
+    with open(os.path.join(workspace, "forecast_run.json"), "r") as f:
+        return json.load(f)
 
 
 def create_logger(
@@ -21,13 +58,13 @@ def create_logger(
     else:
         handler = log.StreamHandler(sys.stdout)
 
-        handler.setLevel(level)
-        handler.setFormatter(
-            log.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-        )
+    handler.setLevel(level)
+    handler.setFormatter(
+        log.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    )
 
-        # Add the handler to the logger
-        logger.addHandler(handler)
+    # Add the handler to the logger
+    logger.addHandler(handler)
 
     return logger
 

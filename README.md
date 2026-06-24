@@ -18,7 +18,7 @@ pip install -e .
 
 ## Non-Python Dependencies
 
-- ecflow>=5.11.3
+- ecflow>=5.11.3,<5.17
 - nco>=5.1.8
 - ksh>=2020.0.0
 
@@ -32,7 +32,7 @@ pip install -e .
     mars_bond_id='251'
     staticdata = '/path/to/assets'
     workroot = f'/path/to/workroot'
-    mode = 'test'  # suite mode ('rd':research, 'test':test, 'prod':production)
+    mode = 'test'  # suite mode ('test':test, 'prod':production)
     expver = 'geoglows'
     exparch = '/path/to/archive'
     iniexparch = '/path/to/init_archive'
@@ -80,7 +80,7 @@ pip install -e .
     )
 
     # --------------------------------------------
-    # Configuration of EFAS software packages
+    # Configuration of GEOGloWS software packages
     # which are installed together with the suite.
     # --------------------------------------------
     packages = dict(

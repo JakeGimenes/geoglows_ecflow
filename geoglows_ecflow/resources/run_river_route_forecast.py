@@ -1,6 +1,5 @@
 import argparse
 import datetime
-import json
 import os
 import sys
 from glob import glob
@@ -10,6 +9,7 @@ import river_route as rr
 from geoglows_ecflow.resources.helper_functions import (
     create_logger,
     get_ensemble_number_from_forecast,
+    load_forecast_run,
 )
 
 
@@ -30,8 +30,7 @@ def _find_state_init(vpu_input_dir: str, date: str) -> str | None:
 
 
 def river_route_forecast_exec(workspace: str, job_id: str, log_dir: str) -> None:
-    with open(os.path.join(workspace, "forecast_run.json"), "r") as f:
-        data = json.load(f)
+    data = load_forecast_run(workspace)
 
     job = data.get(job_id)
     if not job:

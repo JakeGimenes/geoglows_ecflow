@@ -28,8 +28,9 @@ import datetime
 import subprocess
 import contextlib
 import logging as log
-import imp
 import importlib
+import importlib.util
+import importlib.machinery
 import argparse
 
 from geoglows_ecflow.workflow.comfies.memoize import memoize
@@ -60,7 +61,7 @@ from geoglows_ecflow.workflow.comfies.templating import (
     TemplateError,
 )
 from geoglows_ecflow.workflow.comfies.sjob import SshHost
-from pkg_resources import parse_version
+from packaging.version import parse as parse_version
 from geoglows_ecflow.workflow.comfies.version import __version__
 from geoglows_ecflow.workflow.comfies.py2 import basestring
 import ecflow
@@ -368,12 +369,20 @@ def module_exists(name, path):
     """
     Test if module exists in path.
     If module doesn't exist return False.
+
+    Walk the dotted name one component at a time, descending into each
+    package's directory, and return the final source path (truthy) or False.
     """
     for x in name.split("."):
-        try:
-            file, path, descr = imp.find_module(x, [path])
-        except ImportError:
+        spec = importlib.machinery.PathFinder.find_spec(x, [path])
+        if spec is None:
             return False
+        if spec.submodule_search_locations:
+            # x is a package; search the next component inside its directory
+            path = list(spec.submodule_search_locations)[0]
+        else:
+            # x is a module; its origin is the source file
+            path = spec.origin
     return path
 
 
@@ -772,9 +781,9 @@ class BaseBuilder(object):
 
     def __init__(self, config):
         globals()["ecflow"] = importlib.import_module(self.ecflow_module)
-        if parse_version(self.comfies_minimum_version) > parse_version(
-            __version__
-        ):
+        if self.comfies_minimum_version != "any" and parse_version(
+            self.comfies_minimum_version
+        ) > parse_version(__version__):
             raise ComfiesVersionError(
                 "This suite needs version {}"
                 " or later of comfies package".format(

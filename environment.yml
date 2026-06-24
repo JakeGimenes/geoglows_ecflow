@@ -3,9 +3,11 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - python>=3.11,<3.14
+  - python>=3.12,<3.14
   - pip
-  - ecflow
+  # comfies' node wrappers set Variable.parent, which ecflow 5.17 made
+  # read-only; pin below that until comfies is updated.
+  - ecflow<5.17
   - nco
   - pyyaml
   - numpy

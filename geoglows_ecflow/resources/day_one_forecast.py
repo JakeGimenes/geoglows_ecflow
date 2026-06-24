@@ -2,14 +2,21 @@ import datetime
 import glob
 import logging
 import os
-import sys
 import argparse
 import numpy as np
 import pandas as pd
 import xarray as xr
 import netCDF4 as nc
-import dask
-from numcodecs import Blosc
+
+from geoglows_ecflow.resources.helper_functions import (
+    RETURN_PERIODS,
+    configure_logging,
+)
+from geoglows_ecflow.resources.zarr_io import write_dataset_to_zarr
+
+# Only streams of at least this Strahler order are checked against return
+# periods for the warnings summary (smaller headwater streams are skipped).
+MIN_STREAM_ORDER = 3
 
 
 def check_for_return_period_flow(
@@ -17,59 +24,38 @@ def check_for_return_period_flow(
 ):
     max_flow = max(forecasted_flows_df["means"])
 
-    # temporary dates
-    date_r5 = ""
-    date_r10 = ""
-    date_r25 = ""
-    date_r50 = ""
-    date_r100 = ""
+    # retrieve return period flow levels from the dataframe
+    thresholds = {
+        rp: float(rp_data[f"rp{rp}"].values[0]) for rp in RETURN_PERIODS
+    }
 
-    # retrieve return period flow levels from dataframe
-    r2 = float(rp_data["rp2"].values[0])
-    r5 = float(rp_data["rp5"].values[0])
-    r10 = float(rp_data["rp10"].values[0])
-    r25 = float(rp_data["rp25"].values[0])
-    r50 = float(rp_data["rp50"].values[0])
-    r100 = float(rp_data["rp100"].values[0])
-
-    # then compare the timeseries to the return period thresholds
-    if max_flow >= r2:
-        date_r2 = get_time_of_first_exceedance(forecasted_flows_df, r2)
     # if the flow is not larger than the smallest return period, return the
     # dataframe without appending anything
-    else:
+    if max_flow < thresholds[RETURN_PERIODS[0]]:
         return largeflows_df
 
-    # check the rest of the return period flow levels
-    if max_flow >= r5:
-        date_r5 = get_time_of_first_exceedance(forecasted_flows_df, r5)
-    if max_flow >= r10:
-        date_r10 = get_time_of_first_exceedance(forecasted_flows_df, r10)
-    if max_flow >= r25:
-        date_r25 = get_time_of_first_exceedance(forecasted_flows_df, r25)
-    if max_flow >= r50:
-        date_r50 = get_time_of_first_exceedance(forecasted_flows_df, r50)
-    if max_flow >= r100:
-        date_r100 = get_time_of_first_exceedance(forecasted_flows_df, r100)
+    # compare the timeseries to each return period threshold, ascending, so the
+    # progressive masking inside get_time_of_first_exceedance is preserved
+    exceedance_dates = {}
+    for rp in RETURN_PERIODS:
+        if max_flow >= thresholds[rp]:
+            exceedance_dates[rp] = get_time_of_first_exceedance(
+                forecasted_flows_df, thresholds[rp]
+            )
+        else:
+            exceedance_dates[rp] = ""
 
-    new_row = pd.DataFrame(
-        {
-            "comid": rp_data.index[0],
-            "stream_order": stream_order,
-            "max_forecasted_flow": round(max_flow, 2),
-            "date_exceeds_return_period_2": date_r2,
-            "date_exceeds_return_period_5": date_r5,
-            "date_exceeds_return_period_10": date_r10,
-            "date_exceeds_return_period_25": date_r25,
-            "date_exceeds_return_period_50": date_r50,
-            "date_exceeds_return_period_100": date_r100,
-        },
-        index=[0],
-    )
+    row = {
+        "comid": rp_data.index[0],
+        "stream_order": stream_order,
+        "max_forecasted_flow": round(max_flow, 2),
+    }
+    for rp in RETURN_PERIODS:
+        row[f"date_exceeds_return_period_{rp}"] = exceedance_dates[rp]
 
-    largeflows_df = pd.concat([largeflows_df, new_row], ignore_index=True)
+    new_row = pd.DataFrame(row, index=[0])
 
-    return largeflows_df
+    return pd.concat([largeflows_df, new_row], ignore_index=True)
 
 
 def get_time_of_first_exceedance(forecasted_flows_df, flow):
@@ -129,7 +115,8 @@ def postprocess_vpu(
     streams_file_path = os.path.join(input_dir, "master_table.parquet")
     streams_df = pd.read_parquet(streams_file_path)
     large_vpu_streams_df = streams_df[
-        (streams_df["VPUCode"] == int(vpu)) & ((streams_df["strmOrder"] >= 3))
+        (streams_df["VPUCode"] == int(vpu))
+        & (streams_df["strmOrder"] >= MIN_STREAM_ORDER)
     ]
 
     # get the list of comids
@@ -288,48 +275,16 @@ def netcdf_forecast_record_to_zarr(record_path) -> None:
     zarr_path = record_path.replace(".nc", ".zarr")
     record_nc = xr.open_dataset(record_path)
     
-    with dask.config.set(**{
-        'array.slicing.split_large_chunks': False,
-        # set the max chunk size to 5MB
-        'array.chunk-size': '40MB',
-        # use the threads scheduler
-        'scheduler': 'threads',
-        # set the maximum memory target usage to 90% of total memory
-        'distributed.worker.memory.target': 0.80,
-        # do not allow spilling to disk
-        'distributed.worker.memory.spill': False,
-        # specify the amount of resources to allocate to dask workers
-        'distributed.worker.resources': {
-            'memory': 3e9,  # 1e9=1GB, this is the amount per worker
-            'cpu': os.cpu_count(),  # num CPU per worker
-        }
-    }):
-    #set compressing information
-        logging.info("Configuring compression")
-        
-        #if we get rid of dask, we can get rid of the compressor
-        #the compressor throws an error for version 3 so specify version 2
-        compressor = Blosc(cname="zstd", clevel=3, shuffle=Blosc.BITSHUFFLE)
-        encoding = {'Q': {"compressor": compressor}}
-
-        logging.info("Writing to zarr")
-        (
-            record_nc
-            .drop_vars(["lat", "lon"], errors="ignore")
-                    .chunk({
-                        "time": -1,
-                        "river_id": "auto"
-                    })
-                    .to_zarr(
-                        zarr_path,
-                        consolidated=True,
-                        encoding=encoding,
-                        mode = 'w',
-                        zarr_version=2
-                    )
-                )
-
-        record_nc.close()
+    logging.info("Writing to zarr")
+    write_dataset_to_zarr(
+        record_nc,
+        zarr_path,
+        {"time": -1, "river_id": "auto"},
+        drop_vars=["lat", "lon"],
+        mode="w",
+        zarr_version=2,
+    )
+    record_nc.close()
     logging.info("Done")
 
 
@@ -337,31 +292,28 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "workspace",
-        nargs=1,
         help="path to the daily workspace directory",
     )
     parser.add_argument(
         "vpu",
-        nargs=1,
         help="VPU number",
     )
     parser.add_argument(
         "output_dir",
-        nargs=1,
         help="path to the forecast records output directory",
     )
 
     args = parser.parse_args()
-    workspace = args.workspace[0]
-    vpu = args.vpu[0]
+    workspace = args.workspace
+    vpu = args.vpu
     input_dir = os.path.join(workspace, "input")
     output_dir = os.path.join(workspace, "output")
     returnperiods = os.path.join(workspace, "return_periods_dir")
-    forecast_records = args.output_dir[0]
+    forecast_records = args.output_dir
     output_dir = os.path.join(workspace, "output")
 
     # start logging
-    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+    configure_logging()
 
     postprocess_vpu(
         vpu, input_dir, output_dir, returnperiods, forecast_records

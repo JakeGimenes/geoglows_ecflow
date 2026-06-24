@@ -14,7 +14,8 @@ http://www.apache.org/licenses/LICENSE-2.0
 
 import os
 import sys
-import imp
+import importlib.util
+from importlib.machinery import SourceFileLoader
 import collections.abc as collections
 
 import datetime
@@ -52,6 +53,26 @@ class ConfigItemTypeError(ConfigError):
 # ----------------------------------------
 # config file loaders for various formats
 # ----------------------------------------
+
+
+def _load_source(name, path):
+    """Load a Python source file as a module and return it.
+
+    An explicit ``SourceFileLoader`` is used so the file is parsed as Python
+    source regardless of its extension (config files use ``.cfg``).
+    """
+    loader = SourceFileLoader(name, path)
+    spec = importlib.util.spec_from_file_location(name, path, loader=loader)
+    module = importlib.util.module_from_spec(spec)
+    # Register before executing so the file's own relative imports resolve;
+    # drop it again if execution fails, leaving no half-built module behind.
+    sys.modules[name] = module
+    try:
+        loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
 
 
 class ConfigSource(object):
@@ -105,7 +126,7 @@ class PythonConfigFile(ConfigFile):
         try:
             old_dont_write_bytecode = sys.dont_write_bytecode
             sys.dont_write_bytecode = True
-            data = imp.load_source('_sdeploy_config_'+path, path).__dict__
+            data = _load_source('_sdeploy_config_'+path, path).__dict__
             sys.dont_write_bytecode = old_dont_write_bytecode
         except IOError as e:
             msg = path + ": " + e.strerror

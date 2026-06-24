@@ -1,9 +1,10 @@
 import os
 import glob
-import sys
 import logging
 import pandas as pd
 import argparse
+
+from geoglows_ecflow.resources.helper_functions import configure_logging
 
 
 def concat_warnings(workdir: str) -> None:
@@ -51,10 +52,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
     workspace = args.workspace[0]
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        stream=sys.stdout,
-    )
+    configure_logging()
 
     concat_warnings(workspace)
