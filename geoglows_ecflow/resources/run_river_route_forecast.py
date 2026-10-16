@@ -56,22 +56,25 @@ def river_route_forecast_exec(workspace: str, job_id: str, log_dir: str) -> None
     logger.info(f"  state_final={state_final}")
     logger.info(f"  discharge={discharge_file}")
 
-    rr.RapidMuskingum(
-        params_file=os.path.join(vpu_input_dir, "params.parquet"),
-        grid_runoff_files=[runoff],
-        grid_weights_file=os.path.join(vpu_input_dir, "weights.nc"),
-        discharge_files=[discharge_file],
-        channel_state_init_file=state_init,
-        channel_state_final_file=state_final,
-        # ECMWF runoff is accumulated since forecast start; the default
-        # ("incremental") would silently produce wrong day-1 values.
-        grid_accumulation_type="cumulative",
-        runoff_processing_mode="ensemble",
-        var_x="lon",
-        var_y="lat",
-        progress_bar=False,
-        log_level="INFO",
-    ).route()
+    rr.Router(
+        rr.Configs(
+            network_file=os.path.join(vpu_input_dir, "params.parquet"),
+            forcing="grid",
+            forcing_files=[runoff],
+            grid_weights_file=os.path.join(vpu_input_dir, "weights.nc"),
+            discharge_files=[discharge_file],
+            channel_state_init_file=state_init,
+            channel_state_final_file=state_final,
+            # ECMWF runoff is accumulated since forecast start; the default
+            # ("incremental") would silently produce wrong day-1 values.
+            accumulation_type="cumulative",
+            runoff_processing_mode="ensemble",
+            var_x="lon",
+            var_y="lat",
+            progress_bar=False,
+            log_level="INFO",
+        )
+    ).set_discharge_writer(rr.router.writers.netcdf_writer).route()
 
 
 def main(argv: list[str] | None = None) -> int:
