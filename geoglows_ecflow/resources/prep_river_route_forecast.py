@@ -5,7 +5,12 @@ import os
 import sys
 from glob import glob
 
+import pandas as pd
+import xarray as xr
+
+from geoglows_ecflow.resources.forecast_zarr import create_empty_forecast_zarr
 from geoglows_ecflow.resources.helper_functions import (
+    HRES_ENSEMBLE_MEMBER,
     configure_logging,
     get_ensemble_number_from_forecast,
     get_valid_vpucode_list,
@@ -76,6 +81,21 @@ def forecast_preprocess(
                 "output_file": os.path.join(output_dir, f"Qout_{vpu}_{ens}.nc"),
                 "init_flows": initialize_flows,
             }
+
+        # Pre-create the shared zarr the member tasks append to, in the
+        # network's riverId order and the runoff's time steps.
+        river_ids = pd.read_parquet(
+            os.path.join(vpu_input_dir, "params.parquet"), columns=["riverId"]
+        )["riverId"].to_numpy()
+        with xr.open_dataset(runoff_files[0]) as ro:
+            dates = ro["time"].values
+        create_empty_forecast_zarr(
+            os.path.join(output_dir, f"Qout_{vpu}.zarr"),
+            river_ids,
+            dates,
+            n_members=HRES_ENSEMBLE_MEMBER,
+        )
+        logging.info(f"Pre-created forecast zarr for VPU {vpu}")
 
     with open(os.path.join(workspace, "forecast_run.json"), "w") as f:
         json.dump(master, f)

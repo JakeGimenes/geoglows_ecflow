@@ -6,6 +6,7 @@ from glob import glob
 
 import river_route as rr
 
+from geoglows_ecflow.resources.forecast_zarr import make_member_writer
 from geoglows_ecflow.resources.helper_functions import (
     create_logger,
     get_ensemble_number_from_forecast,
@@ -74,7 +75,11 @@ def river_route_forecast_exec(workspace: str, job_id: str, log_dir: str) -> None
             progress_bar=False,
             log_level="INFO",
         )
-    ).set_discharge_writer(rr.router.writers.netcdf_writer).route()
+    ).set_discharge_writer(
+        make_member_writer(
+            os.path.join(data["output_dir"], f"Qout_{vpu}.zarr"), ens
+        )
+    ).route()
 
 
 def main(argv: list[str] | None = None) -> int:
