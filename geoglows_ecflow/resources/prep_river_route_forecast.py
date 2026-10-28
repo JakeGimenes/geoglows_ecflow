@@ -10,7 +10,6 @@ import xarray as xr
 
 from geoglows_ecflow.resources.forecast_zarr import create_empty_forecast_zarr
 from geoglows_ecflow.resources.helper_functions import (
-    HRES_ENSEMBLE_MEMBER,
     configure_logging,
     get_ensemble_number_from_forecast,
     get_valid_vpucode_list,
@@ -82,26 +81,40 @@ def forecast_preprocess(
                 "init_flows": initialize_flows,
             }
 
-        # Pre-create the shared zarr the member tasks append to, in the
-        # network's riverId order and the runoff's time steps.
-        river_ids = pd.read_parquet(
-            os.path.join(vpu_input_dir, "params.parquet"), columns=["riverId"]
-        )["riverId"].to_numpy()
-        with xr.open_dataset(runoff_files[0]) as ro:
-            dates = ro["time"].values
-        create_empty_forecast_zarr(
-            os.path.join(output_dir, f"Qout_{vpu}.zarr"),
-            river_ids,
-            dates,
-            n_members=HRES_ENSEMBLE_MEMBER,
-        )
-        logging.info(f"Pre-created forecast zarr for VPU {vpu}")
-
     with open(os.path.join(workspace, "forecast_run.json"), "w") as f:
         json.dump(master, f)
 
     logging.info("Wrote forecast_run.json")
     return master
+
+
+def precreate_forecast_stores(master: dict) -> None:
+    """Pre-create each VPU's shared append zarr from the job manifest.
+
+    One ``Qout_<vpu>.zarr`` per VPU, in the network's riverId order and the
+    runoff's time steps, for the ens_member tasks to append into. Kept out of
+    forecast_preprocess so the manifest builder stays pure and I/O free.
+
+    Args:
+        master: The manifest returned by ``forecast_preprocess``.
+    """
+    output_dir = master["output_dir"]
+    done = set()
+    for job in master.values():
+        if not isinstance(job, dict) or job.get("vpu") in done:
+            continue
+        vpu = job["vpu"]
+        done.add(vpu)
+        river_ids = pd.read_parquet(
+            os.path.join(job["input_dir"], "params.parquet"),
+            columns=["riverId"],
+        )["riverId"].to_numpy()
+        with xr.open_dataset(job["runoff"]) as ro:
+            dates = ro["time"].values
+        create_empty_forecast_zarr(
+            os.path.join(output_dir, f"Qout_{vpu}.zarr"), river_ids, dates
+        )
+        logging.info(f"Pre-created forecast zarr for VPU {vpu}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -111,12 +124,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("workspace", help="Path to workspace directory")
     args = parser.parse_args(argv)
 
-    forecast_preprocess(
+    master = forecast_preprocess(
         workspace=args.workspace,
         input_dir=os.path.join(args.workspace, "input"),
         output_dir=os.path.join(args.workspace, "output"),
         runoff_dir=args.workspace,
     )
+    precreate_forecast_stores(master)
     return 0
 
 
